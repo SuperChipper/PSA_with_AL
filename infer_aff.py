@@ -5,7 +5,7 @@ from tool import imutils
 import argparse
 import importlib
 import numpy as np
-
+import cv2
 import voc12.data
 from torch.utils.data import DataLoader
 import imageio
@@ -50,9 +50,9 @@ def get_indices_in_radius(height, width, radius):
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--weights", default="resnet38_aff.pth", type=str)
+    parser.add_argument("--weights", default="res_aff_psa_epoch7.pth", type=str)
     parser.add_argument("--network", default="network.resnet38_aff", type=str)
-    parser.add_argument("--infer_list", default="voc12/train_aug.txt", type=str)
+    parser.add_argument("--infer_list", default="voc12/train_aug1.txt", type=str)
     parser.add_argument("--num_workers", default=8, type=int)
     parser.add_argument("--cam_dir", default="cam", type=str)
     parser.add_argument("--voc12_root", default="VOCdevkit/VOC2012", type=str)
@@ -76,7 +76,7 @@ if __name__ == '__main__':
          model.normalize,
          imutils.HWC_to_CHW]))
     infer_data_loader = DataLoader(infer_dataset, shuffle=False, num_workers=args.num_workers, pin_memory=True)
-
+    alt_path="label_dict"
     for iter, (name, img) in tqdm(enumerate(infer_data_loader)):
 
         name = name[0]
@@ -90,14 +90,15 @@ if __name__ == '__main__':
 
         dheight = int(np.ceil(img.shape[2]/8))
         dwidth = int(np.ceil(img.shape[3]/8))
-        #cam=[]
-        #cam = np.load(os.path.join(args.cam_dir, name + '.npy'))#.item()
 
         cam = np.load(os.path.join(args.cam_dir, name + '.npy'),allow_pickle=True).item()
+        atl = np.load(os.path.join(alt_path, name + '.npy'),allow_pickle=True).item()
 
         cam_full_arr = np.zeros((21, orig_shape[2], orig_shape[3]), np.float32)
+        atl_full_arr = np.zeros((20, orig_shape[2], orig_shape[3]), np.float32)
         for k, v in cam.items():
             cam_full_arr[k + 1] = v
+        
         #for k, v in cam.item():
            # cam_full_arr[k+1] = v
         cam_full_arr[0] = (1 - np.max(cam_full_arr[1:], (0), keepdims=False))**args.alpha
@@ -122,5 +123,6 @@ if __name__ == '__main__':
             _, cam_rw_pred = torch.max(cam_rw, 1)
 
             res = np.uint8(cam_rw_pred.cpu().data[0])[:orig_shape[2], :orig_shape[3]]
-
+            for k, v in atl.items():
+                res[v!=0] = k+1
             imageio.imsave(os.path.join(args.out_rw, name + '.png'), res)

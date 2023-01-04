@@ -67,7 +67,7 @@ class RunningConfusionMatrix():
         predicted_set = self.overall_confusion_matrix.sum(axis=0)
         union = ground_truth_set + predicted_set - intersection
 
-        intersection_over_union = intersection / union.astype(np.float32)
+        intersection_over_union = intersection /union.astype(np.float32)
         mean_intersection_over_union = np.nanmean(intersection_over_union)
 
         return mean_intersection_over_union

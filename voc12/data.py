@@ -4,7 +4,7 @@ import torch
 from torch.utils.data import Dataset
 import PIL.Image
 import os.path
-import cv2
+import scipy.misc
 
 IMG_FOLDER_NAME = "JPEGImages"
 ANNOT_FOLDER_NAME = "Annotations"
@@ -39,7 +39,7 @@ def load_image_label_list_from_xml(img_name_list, voc12_root):
 
 def load_image_label_list_from_npy(img_name_list):
 
-    cls_labels_dict = np.load('voc12/cls_labels.npy',allow_pickle=True).item()
+    cls_labels_dict = np.load('voc12/cls_labels.npy').item()
 
     return [cls_labels_dict[img_name] for img_name in img_name_list]
 
@@ -65,9 +65,9 @@ class VOC12ImageDataset(Dataset):
 
     def __getitem__(self, idx):
         name = self.img_name_list[idx]
-        path=get_img_path(name, self.voc12_root)
-        img = PIL.Image.open(path).convert("RGB")
-        #img.show()
+
+        img = PIL.Image.open(get_img_path(name, self.voc12_root)).convert("RGB")
+
         if self.transform:
             img = self.transform(img)
 

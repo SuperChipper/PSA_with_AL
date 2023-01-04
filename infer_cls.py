@@ -15,15 +15,15 @@ from PIL import Image
 import torch.nn.functional as F
 import os.path
 import cv2
-import skimage
-from skimage.segmentation import slic, mark_boundaries
-from skimage import io
+#import skimage
+#from skimage.segmentation import slic, mark_boundaries
+#from skimage import io
 from networkx.linalg import adj_matrix
 from skimage.future import graph
 from skimage import segmentation
 import matplotlib.pyplot as plt
 from PIL import Image, ImageEnhance
-import mtutils as mt
+from multiprocessing import Pool
 from tqdm import tqdm
 import os
 import imageio
@@ -163,7 +163,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument("--weights", default="res38_cls.pth",required=False, type=str)
     parser.add_argument("--network", default="network.resnet38_cls", type=str)
-    parser.add_argument("--infer_list", default="voc12/train_aug.txt", type=str)
+    parser.add_argument("--infer_list", default="voc12/train_aug1.txt", type=str)
     parser.add_argument("--num_workers", default=8, type=int)
     parser.add_argument("--voc12_root",default="VOCdevkit\VOC2012", required=False, type=str)
     parser.add_argument("--low_alpha", default=4, type=int)
@@ -195,6 +195,7 @@ if __name__ == '__main__':
     ###超像素分割
     length=len(infer_data_loader)
     procbar=tqdm(total=length)
+    #p=Pool(processes=None)
     for iter, (img_name, img_list, label) in enumerate(infer_data_loader):
         img_name = img_name[0]; label = label[0]
 
@@ -269,8 +270,9 @@ if __name__ == '__main__':
             #超像素内部均值
         mean_slic = np.zeros([number_slic, 20])
         norm_cam1 = norm_cam.transpose(1, 2, 0)
+        norm_cam_copy=np.zeros_like(norm_cam1)
         for i in range(number_slic):
-            #length_slic_i = len(slic[i])
+            length_slic_i = len(slic[i])
 
             sum_slic_i = np.zeros(20)
             coordinates=slic[i]
@@ -378,33 +380,37 @@ if __name__ == '__main__':
             label_mask[locations] = ii
 
             # 在标签图上找到对应的区域，进行标注
+        atl_save_path="label_dict"
+        if not os.path.isdir(atl_save_path):
+            os.mkdir(atl_save_path)
+        
         for i in range(len(slic_selected1)):
             coordinate = slic_selected1[i]
             x = coordinate[0]
             y = coordinate[1]
             #print(label_mask[x][y])
-            if (label_mask[x][y] == 0):
+            if (label_mask[x][y] != 0):
                 ##该点处的cam数值为[0,0,....0]
-                norm_cam1[x][y] = np.zeros(20)
+                #norm_cam1[x][y] = np.zeros(20)
+                norm_cam_copy[x][y][label_mask[x][y] - 1] = 1
 
-            else:
+            #else:
                 ##该点处的cam数值为[0,0,..1..0]
-                norm_cam1[x][y] = np.zeros(20)
-                norm_cam1[x][y][label_mask[x][y] - 1] = 1
+                #norm_cam1[x][y] = np.zeros(20)
+                #norm_cam1[x][y][label_mask[x][y] - 1] = 1
 
         for i in range(np.shape(around_slic2)[0]):
             if (abs(score[around_slic2[i]] - score[np.argmax(score)]) <= 0.1):
                 for j in range(len(slic[around_slic2[i]])):
-                    coordinate = slic[around_slic2[i]][j]
-                    x = coordinate[0]
-                    y = coordinate[1]
-                    #print(label_mask[x][y])
-                    if (label_mask[x][y] == 0):
-                        norm_cam1[x][y] = np.zeros(20)
-                    else:
-                        norm_cam1[x][y] = np.zeros(20)
-                        norm_cam1[x][y][label_mask[x][y] - 1] = 1
+
+                    x,y= slic[around_slic2[i]][j]
+
+                    #norm_cam1[x][y] = np.zeros(20)
+                    if (label_mask[x][y] != 0):
+                        norm_cam_copy[x][y][label_mask[x][y] - 1] = 1
             # 可视化
+        copy_dict={}
+        norm_cam_copy = norm_cam_copy.transpose(2, 0, 1)
         norm_cam1 = norm_cam1.transpose(2, 0, 1)
         # imageio.imsave(os.path.join(args.out_cam_pred, img_name + 'mark11' + '.png'),
         #                255 * norm_cam1[np.argmax(cam_ssum)])
@@ -414,6 +420,8 @@ if __name__ == '__main__':
             #print(label[i])
             if label[i] > 1e-5:
                 cam_dict[i] = norm_cam1[i]
+                copy_dict[i] = norm_cam_copy[i]
+        np.save(os.path.join(atl_save_path, img_name + '.npy'), copy_dict)
         if args.out_cam is not None:
             np.save(os.path.join(args.out_cam, img_name + '.npy'), cam_dict)
 

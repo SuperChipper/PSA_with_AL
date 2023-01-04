@@ -10,7 +10,7 @@ from tool import pyutils, imutils, torchutils
 import argparse
 import importlib
 from tqdm import tqdm
-
+import matplotlib.pyplot as plt
 
 if __name__ == '__main__':
 
@@ -21,11 +21,11 @@ if __name__ == '__main__':
     parser.add_argument("--lr", default=0.01, type=float)
     parser.add_argument("--num_workers", default=8, type=int)
     parser.add_argument("--wt_dec", default=5e-4, type=float)
-    parser.add_argument("--train_list", default="voc12/train_aug.txt", type=str)##train_aug-->val
+    parser.add_argument("--train_list", default="voc12/train_aug1.txt", type=str)##train_aug-->val
     parser.add_argument("--val_list", default="voc12/val.txt", type=str)##val-->train
     parser.add_argument("--session_name", default="res_aff", type=str)
     parser.add_argument("--crop_size", default=448, type=int)
-    parser.add_argument("--weights", default="ilsvrc-cls_rna-a1_cls1000_ep-0001.params", type=str)
+    parser.add_argument("--weights", default="res38_cls.pth", type=str)
     parser.add_argument("--voc12_root",default="VOCdevkit\VOC2012", type=str)
     parser.add_argument("--la_crf_dir",default="out_la_crf", type=str)
     parser.add_argument("--ha_crf_dir",default="out_ha_crf" , type=str)
@@ -66,14 +66,14 @@ if __name__ == '__main__':
     max_step = len(train_dataset) // args.batch_size * args.max_epoches
 
     param_groups = model.get_parameter_groups()
-    """
+
     optimizer = torchutils.PolyOptimizer([
         {'params': param_groups[0], 'lr': args.lr, 'weight_decay': args.wt_dec},
         {'params': param_groups[1], 'lr': 2*args.lr, 'weight_decay': 0},
         {'params': param_groups[2], 'lr': 10*args.lr, 'weight_decay': args.wt_dec},
         {'params': param_groups[3], 'lr': 20*args.lr, 'weight_decay': 0}
     ], lr=args.lr, weight_decay=args.wt_dec, max_step=max_step)
-    """
+
     optimizer=torch.optim.SGD(lr=args.lr,params=model.parameters(),momentum=0.5)
     if args.weights[-7:] == '.params':
         import network.resnet38d
@@ -92,9 +92,10 @@ if __name__ == '__main__':
 
     avg_meter = pyutils.AverageMeter('loss', 'bg_loss', 'fg_loss', 'neg_loss', 'bg_cnt', 'fg_cnt', 'neg_cnt')
 
-    timer = pyutils.Timer("Session started: ")
-
+    #timer = pyutils.Timer("Session started: ")
+    avg_losses=[]
     for ep in range(args.max_epoches):
+        losses=[]
         bar=tqdm(total=len(train_data_loader))
         for iter, pack in enumerate(train_data_loader):
 
@@ -143,14 +144,18 @@ if __name__ == '__main__':
                       #'imps:%.1f' % ((iter+1) * args.batch_size / timer.get_stage_elapsed()),
                       #'Fin:%s' % (timer.str_est_finish()),
                       #'lr: %.4f' % (optimizer.param_groups[0]['lr']), flush=True,end='')
-
+            losses.append(avg_meter.get('loss'))
             avg_meter.pop()
 
 
         else:
+            #avg_loss=np.mean(np.array(losses))
+            avg_losses.append(np.mean(np.array(losses)))
             #print('')
-            timer.reset_stage()
+            #timer.reset_stage()
             bar.close()
+            torch.save(model.module.state_dict(), args.session_name +'epoch'+str(ep)+'.pth')
+            #torch.save(optimizer.state_dict(), args.session_name + '_opt.pth')
+    plt.plot(avg_losses)
+    plt.show()
 
-    torch.save(model.module.state_dict(), args.session_name + '.pth')
-    torch.save(optimizer.state_dict(), args.session_name + '_opt.pth')
