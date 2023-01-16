@@ -82,7 +82,7 @@ def encode_segmap(mask):
         label_mask[np.where(np.all(mask == label, axis=-1))[:2]] = ii
     label_mask = label_mask.astype(int)
 
-aug_path=".\out_rw\\"
+aug_path=".\out_rw_mark\\"
 out_path = ".\out_rwrgb\\"
 
 if os.path.exists(out_path) is not True:

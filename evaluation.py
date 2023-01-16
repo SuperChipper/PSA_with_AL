@@ -10,6 +10,7 @@ import numpy as np
 import argparse
 import os
 import imageio
+from multiprocessing import Pool
 VOC_COLORMAP = np.array([[0, 0, 0], [128, 0, 0], [0, 128, 0], [128, 128, 0],
                              [0, 0, 128], [128, 0, 128], [0, 128, 128], [128, 128, 128],
                              [64, 0, 0], [192, 0, 0], [64, 128, 0], [192, 128, 0],
@@ -17,12 +18,14 @@ VOC_COLORMAP = np.array([[0, 0, 0], [128, 0, 0], [0, 128, 0], [128, 128, 0],
                              [0, 64, 0], [128, 64, 0], [0, 192, 0], [128, 192, 0],
                              [0, 64, 128]])
 
-def compute_miou(gt_path, pred_path):
+def compute_miou(gt_path, pred_path,pred_path1):
     CM = RCM(list(range(21)))
+    CM1 = RCM(list(range(21)))
     a=0
     preds = os.listdir(pred_path)
     print('n preds: {}'.format(len(preds)))
-    gts = os.listdir(gt_path)
+    #gts = os.listdir(gt_path)
+
     for fname in preds:
         a+=1
         print("{}/{}".format(a,len(preds)))
@@ -37,9 +40,15 @@ def compute_miou(gt_path, pred_path):
         gt_img = imageio.imread(os.path.join(gt_path, fname))
         gt_img2 = transfer(gt_img)
         CM.update_matrix(gt_img2.flatten(), p_img2.flatten())
+        p_img = imageio.imread(os.path.join(pred_path1, fname))
+        p_img2 = transfer(p_img)
+        CM1.update_matrix(gt_img2.flatten(), p_img2.flatten())
+        #if a>= 100:
+            #break
 
     miou = CM.compute_current_mean_intersection_over_union()
-    return miou
+    miou1 = CM1.compute_current_mean_intersection_over_union()
+    return miou,miou1
 
 def transfer(name):
     mask = name
@@ -54,17 +63,17 @@ def transfer(name):
 
 if __name__ == "__main__":
 
-    VOC_HOME = 'E:/SegmentationClassAug/SegmentationClassAugrgb/'
+    VOC_HOME = '.\VOCdevkit\VOC2012\SegmentationClassAugrgb'
 
 
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--gt_path", default=VOC_HOME, type=str)
-    parser.add_argument("--pred_path", default='D:/QQ文件/out_rwrgb(1)/out_rwrgb', type=str)
+    parser.add_argument("--pred_path", default='./out_rwrgb', type=str)
     args = parser.parse_args()
 
 
 
 
-    miou = compute_miou(args.gt_path, args.pred_path)
-    print('miou:{}'.format(miou))
+    miou,miou1 = compute_miou(args.gt_path, args.pred_path,'./out_rwrgb_origin')
+    print('miou1:{},miou2:{}'.format(miou,miou1))

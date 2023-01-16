@@ -15,15 +15,15 @@ from PIL import Image
 import torch.nn.functional as F
 import os.path
 import cv2
-#import skimage
-#from skimage.segmentation import slic, mark_boundaries
-#from skimage import io
+import skimage
+from skimage.segmentation import slic, mark_boundaries
+from skimage import io
 from networkx.linalg import adj_matrix
 from skimage.future import graph
 from skimage import segmentation
 import matplotlib.pyplot as plt
 from PIL import Image, ImageEnhance
-from multiprocessing import Pool
+import mtutils as mt
 from tqdm import tqdm
 import os
 import imageio
@@ -73,6 +73,20 @@ if __name__ == '__main__':
         else:
             return rgb
 
+
+    def _crf_with_alpha(cam_dict, alpha):
+        v = np.array(list(cam_dict.values()))
+        bg_score = np.power(1 - np.max(v, axis=0, keepdims=True), alpha)
+        bgcam_score = np.concatenate((bg_score, v), axis=0)
+        crf_score = imutils.crf_inference(orig_img, bgcam_score, labels=bgcam_score.shape[0])
+
+        n_crf_al = dict()
+
+        n_crf_al[0] = crf_score[0]
+        for i, key in enumerate(cam_dict.keys()):
+            n_crf_al[key + 1] = crf_score[i + 1]
+
+        return n_crf_al
 
     def get_pascal_labels():
         """
@@ -127,41 +141,19 @@ if __name__ == '__main__':
 
     # 彩色图路径
 
-    out_path = ".\\VOCdevkit\\VOC2012\\SegmentationClassAugrgb\\"
+    out_path = ".\VOCdevkit\\VOC2012\\SegmentationClassAug\\SegmentationClassAugrgb\\"
     if os.path.exists(out_path) is not True:
         os.mkdir(out_path)
 
-    # 处理txt中的对应图像
-    txt_path = '.\\voc12\\train_aug.txt'
+
     # 标签所在的文件夹
-    label_file_path = '.\\VOCdevkit\\VOC2012\\SegmentationClassAug'
+    label_file_path = '.\VOCdevkit\\VOC2012\\SegmentationClassAug'
     # 处理后的标签保存的地址
     gray_save_path = '.\\'
 
-    # with open(txt_path, 'r') as f:
-    #     file_names = f.readlines()
-    #     for name in tqdm(file_names):
-    #         name = name.strip('\n')  # 去掉换行符
-    #         name = name.split(' ')[0][-15:-4]
-    #         label_name = name + '.png'  # label文件名
-    #         label_url = os.path.join(label_file_path, label_name)
-    #
-    #         mask = cv2.imread(label_url)
-    #         mask = cv2.cvtColor(mask, cv2.COLOR_BGR2RGB)  # 通道转换
-    #         mask = mask.astype(int)
-    #         label_mask = np.zeros((mask.shape[0], mask.shape[1]), dtype=np.int16)
-    #         # 标签处理
-    #         for ii, label in enumerate(VOC_COLORMAP):
-    #             locations = np.all(mask == label, axis=-1)
-    #             label_mask[locations] = ii
-    #         # 标签保存
-    #         cv2.imwrite(gray_save_path + label_name, label_mask)
-    #
-    #   # 初始化slic项，超像素平均尺寸20（默认为10），平滑因子20
-
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--weights", default="res38_cls.pth",required=False, type=str)
+    parser.add_argument("--weights", default=".\\res38_cls.pth",required=False, type=str)
     parser.add_argument("--network", default="network.resnet38_cls", type=str)
     parser.add_argument("--infer_list", default="voc12/train_aug1.txt", type=str)
     parser.add_argument("--num_workers", default=8, type=int)
@@ -172,6 +164,8 @@ if __name__ == '__main__':
     parser.add_argument("--out_la_crf", default="out_la_crf", type=str)
     parser.add_argument("--out_ha_crf", default="out_ha_crf", type=str)
     parser.add_argument("--out_cam_pred", default="cam_pred", type=str)
+    parser.add_argument("--manual_label_number", default=2, type=int)
+
 
     args = parser.parse_args()
 
@@ -192,19 +186,17 @@ if __name__ == '__main__':
 
     n_gpus = torch.cuda.device_count()
     model_replicas = torch.nn.parallel.replicate(model, list(range(n_gpus)))
+    length = len(infer_data_loader)
+    #procbar = tqdm(total=length)
     ###超像素分割
-    length=len(infer_data_loader)
-    procbar=tqdm(total=length)
-    #p=Pool(processes=None)
     for iter, (img_name, img_list, label) in enumerate(infer_data_loader):
         img_name = img_name[0]; label = label[0]
-
         img_path = voc12.data.get_img_path(img_name, args.voc12_root)
         orig_img = np.asarray(Image.open(img_path))
         orig_img_size = orig_img.shape[:2]
         ###加入自己的判别式
         ###设置规则网格
-        slic = cv2.ximgproc.createSuperpixelSLIC(orig_img, region_size=30, ruler=20.0)
+        slic = cv2.ximgproc.createSuperpixelSLIC(orig_img, region_size=40, ruler=20.0)
         slic.iterate(10)  # 迭代次数，越大效果越好
         mask_slic = slic.getLabelContourMask()  # 获取Mask，超像素边缘Mask==1
         label_slic = slic.getLabels()  # 获取超像素标签
@@ -222,7 +214,7 @@ if __name__ == '__main__':
         for i in range(w):
             for j in range(h):
                 value = label_slic[i][j]
-                slic[value].append((i, j))
+                slic[value].append([i, j])
 
         img_slic = cv2.bitwise_and(orig_img, orig_img, mask=mask_inv_slic)  # 在原图上绘制超像素边界
         #mt.PIS(img_slic)  # 显示图像
@@ -247,50 +239,62 @@ if __name__ == '__main__':
         sum_cam = np.sum(cam_list, axis=0)
         norm_cam = sum_cam / (np.max(sum_cam, (1, 2), keepdims=True) + 1e-5)
         cam_dict = {}
+        cam_dict0 = {}
 
-        ###CAM最大概率类别的热力图
-        # if args.out_cam_pred is not None:
-        #     bg_score = [np.ones_like(norm_cam[0]) * 0.2]
-        #     aaa = np.concatenate((bg_score, norm_cam))
-        #     pred = np.argmax(np.concatenate((bg_score, norm_cam)), 0)
-        #     cam_ssum = np.zeros(20)
-        #     j = 0
-        #     while (j < 20):
-        #         cam_ssum[j] = np.sum(norm_cam[j])
-        #         j += 1
-        #
-        #     cam1 = norm_cam[np.argmax(cam_ssum)]
-        #
-        #     cam_img = np.uint8(cam1 * 255)
-        #     heatmap = cv2.applyColorMap(cam_img, cv2.COLORMAP_JET)
-        #     result = heatmap * 0.3 + orig_img * 0.5
-        #     imageio.imsave(os.path.join(args.out_cam_pred, img_name + '.png'), result)  # pred.astype(np.uint8))
-        #     ###scipy.misc.imsave->imageio.imsave
+        ##CAM热力图
+        if args.out_cam_pred is not None:
+            bg_score = [np.ones_like(norm_cam[0]) * 0.2]
+
+            pred = np.argmax(np.concatenate((bg_score, norm_cam)), 0)
+            cam_ssum = np.zeros(20)
+            j = 0
+
+            while (j < 20):
+                cam_ssum[j] = np.sum(norm_cam[j])
+                j += 1
+            #result = orig_img * 0.5
+            for i in range(20):
+
+                cam1=norm_cam[i]
+                if(np.max(cam1)>0):
+                    cam_img = np.uint8(cam1 * 255)
+
+                    heatmap = cv2.applyColorMap(cam_img, cv2.COLORMAP_JET)
+                    #result += heatmap * 0.3
+
+
+            #imageio.imsave(os.path.join(args.out_cam_pred, img_name + '.png'), result)  # pred.astype(np.uint8))
+            ##scipy.misc.imsave->imageio.imsave
         ###计算分数
             #超像素内部均值
+        # for i in range(20):
+        #     if label[i] > 1e-5:
+        #
+        #         cam_dict0[i]=norm_cam[i]
+        #         np.save(os.path.join(args.out_cam_pred, img_name + str(i) + '.npy'), norm_cam[i])
+        # imageio.imsave(os.path.join("E:/psa-master/psa-master/contrast/" + str(0) + 'cam_dict.png'), norm_cam[0])
+        # crf_la0 = _crf_with_alpha(cam_dict0, args.low_alpha)
+        # crf_ha0 = _crf_with_alpha(cam_dict0, args.high_alpha)
+
+        # pred.astype(np.uint8))
         mean_slic = np.zeros([number_slic, 20])
         norm_cam1 = norm_cam.transpose(1, 2, 0)
-        norm_cam_copy=np.zeros_like(norm_cam1)
+        n_slic = np.zeros([number_slic])
         for i in range(number_slic):
             length_slic_i = len(slic[i])
 
             sum_slic_i = np.zeros(20)
-            coordinates=slic[i]
-
-            #a=np.sum(norm_cam1[x,y],axis=0)
-            try:
-                x, y = np.array(coordinates).T
-                sum_slic_i=np.sum(norm_cam1[x,y],axis=0)
-            #sum_slic_i = np.zeros(20)
-            #for j in range(length_slic_i):
-                #coordinate = slic[i][j]
-                #x,y= coordinate
-                #a = norm_cam1[x][y]
-                #sum_slic_i += a
-                mean_slic[i] = sum_slic_i / length_slic_i
-            except:
-                mean_slic[i]=0
-
+            for j in range(length_slic_i):
+                coordinate = slic[i][j]
+                x = coordinate[0]
+                y = coordinate[1]
+                a = norm_cam1[x][y]
+                sum_slic_i += a
+            mean_slic[i] = sum_slic_i / length_slic_i
+            if(np.any(mean_slic[i])and np.max(mean_slic[i])>=0.1):
+                n_slic[i]=np.argmax(mean_slic[i])+1
+            else:
+                n_slic[i]=0
             #超像素内部方差
         std_slic = np.zeros(number_slic)
         mean_slic1 = np.zeros(number_slic)
@@ -301,155 +305,165 @@ if __name__ == '__main__':
             coordinates = slic[i]
             try:
                 x, y = np.array(coordinates).T
-                a = norm_cam1[x,y]
-                s = np.sum(np.multiply(a - mean_slic[i], a - mean_slic[i]),axis=0)
-            #for j in range(length_slic_i):
-                #coordinate = slic[i][j]
-                #x,y = coordinate
-                #a = norm_cam1[x][y]
-                #s=np.sum(np.dot(a-mean_slic[i],a-mean_slic[i]))
-                #std = (s ** 0.5) / length_slic_i
+                a = norm_cam1[x, y]
+                s = np.sum(np.multiply(a - mean_slic[i], a - mean_slic[i]), axis=0)
+                # for j in range(length_slic_i):
+                # coordinate = slic[i][j]
+                # x,y = coordinate
+                # a = norm_cam1[x][y]
+                # s=np.sum(np.dot(a-mean_slic[i],a-mean_slic[i]))
+                # std = (s ** 0.5) / length_slic_i
 
-                std_slic[i] = np.sqrt(np.sum(s*s)/length_slic_i)
+                std_slic[i] = np.sqrt(np.sum(s * s) / length_slic_i)
                 mean_slic1[i] = max(mean_slic[i])
             except:
-                std_slic[i]=0
-                mean_slic1[i]=0
+                std_slic[i] = 0
+                mean_slic1[i] = 0
             score[i] = (-10 * std_slic[i] - abs(mean_slic1[i] - 0.3))
 
-        # # 显示出confidence area
-        # test_vector=np.zeros(20)
-        # for i in range(w):
-        #     for j in range(h):
-        #
-        #      if (np.argmax(cam_ssum) == np.argmax(norm_cam1[i][j])):
-        #          if(1-np.array_equal(norm_cam1[i][j],test_vector)):
-        #              result[i][j][0] = 0
-        #              result[i][j][1] = 255
-        #              result[i][j][2] = 0
+
 
         ###判断超像素需要标注的程度,在原图上标注其位置
             ###不考虑nan超像素
         for i in range(np.shape(score)[0]):
             if (np.isnan(score[i])):
                 score[i] = score[np.argsort(score)[2]]
-        slic_selected1 = slic[np.argmax(score)]
+        import random
+        #number=random.randint(0,np.shape(score)[0]-1)
+        index1=np.argsort(-score)[:args.manual_label_number]
+        slic_selected1 = np.array(np.array(slic)[index1].T)
+        #slic_selected1 = slic[number]
 
-        # for i in range(len(slic_selected1)):
-        #     coordinate = slic_selected1[i]
-        #     x = coordinate[0]
-        #     y = coordinate[1]
-        #     result[x][y][0] = 255
-        #     result[x][y][1] = 0
-        #     result[x][y][2] = 0
+        #for i in range(len(slic_selected1)):
+            #coordinate = np.array(slic_selected1[i]).flatten()
+            #x = coordinate[0]
+            #y = coordinate[1]
+            #result[x][y][0] = 255
+            #result[x][y][1] = 0
+            #result[x][y][2] = 0
 
-            ###寻找selected_slic周围能够合并的超像素
+            ##寻找selected_slic周围能够合并的超像素
 
-        index = slic_order.index(np.argmax(score))
-        around_slic = np.nonzero(adj[index])[1]
-        around_slic2 = np.zeros_like(around_slic)
-        for i in range(np.shape(around_slic)[0]):
-            around_slic2[i] = slic_order[around_slic[i]]
-
+        # index = slic_order.index(np.argmax(score))
+        # #index = slic_order.index(number)
+        # around_slic = np.nonzero(adj[index])[1]
+        # around_slic2 = np.zeros_like(around_slic)
+        # for i in range(np.shape(around_slic)[0]):
+        #     around_slic2[i] = slic_order[around_slic[i]]
+        #
         # for i in range(np.shape(around_slic2)[0]):
         #     if (abs(score[around_slic2[i]] - score[np.argmax(score)]) <= 0.1):
+        #     #if (abs(score[around_slic2[i]] - score[number]) <= 0.1):
         #         for j in range(len(slic[around_slic2[i]])):
         #             coordinate = slic[around_slic2[i]][j]
+        #             n_slic[around_slic2[i]]
         #             x = coordinate[0]
         #             y = coordinate[1]
         #             result[x][y][0] = 0
         #             result[x][y][1] = 255
         #             result[x][y][2] = 0
-            #可视化
-        # imageio.imsave(os.path.join(args.out_cam_pred, img_name + 'mark' + '.png'),
-        #                result)  # pred.astype(np.uint8))
-        ###模拟标注
-        label_name = img_name + '.png'  # label文件名
-        #label_url = os.path.join(label_file_path, label_name)
+        #     #可视化
+        score2=np.zeros([number_slic])
+        for j in range(0,number_slic):
+            try:
+                index = slic_order.index(j)
+                # index = slic_order.index(number)
+                around_slic = np.nonzero(adj[index])[1]
+                around_slic2 = np.zeros_like(around_slic)
+                for i in range(np.shape(around_slic)[0]):
+                    around_slic2[i] = slic_order[around_slic[i]]
+                for i in range(np.shape(around_slic2)[0]):
+                    if(n_slic[around_slic2[i]]!=n_slic[j]):
+                        score2[j]+=1
+                """if(n_slic[j]==1):
+                    for i in range(len(slic[j])):
+                        coordinate = slic[j][i]
+                        x = coordinate[0]
+                        y = coordinate[1]
+                        result[x][y][0] = 255
+                        result[x][y][1] = 0
+                        result[x][y][2] = 0
+                if (n_slic[j] == 15):
+                    for i in range(len(slic[j])):
+                        coordinate = slic[j][i]
+                        x = coordinate[0]
+                        y = coordinate[1]
+                        result[x][y][0] = 0
+                        result[x][y][1] = 255
+                        result[x][y][2] = 0"""
+            except:
+                print("index error")
 
-        #img1 = imageio.imread(label_url)
-        #decoded = decode_segmap(img1)
+        slic_selected2 = slic[np.argmax(score2)]
+        #for i in range(len(slic_selected2)):
+            #coordinate = slic_selected2[i]
+            #x = coordinate[0]
+            #y = coordinate[1]
+            #result[x][y][0] = 0
+            #result[x][y][1] = 0
+            #result[x][y][2] = 255
+        # slic_selected1 = slic[number]
+
+
+
+            # 可视化
+        #imageio.imsave(os.path.join(args.out_cam_pred, img_name + 'mark' + '.png'),result)
+
+
+
+        ###模拟标注
+
+
+        label_name = img_name + '.png'  # label文件名
+        label_url = os.path.join(label_file_path, label_name)
+
+        img1 = imageio.imread(label_url)
+        decoded = decode_segmap(img1)
         #imageio.imsave(os.path.join(out_path,label_name), decoded)
-        mask = cv2.imread(os.path.join(out_path, label_name))
-        mask = cv2.cvtColor(mask, cv2.COLOR_BGR2RGB)  # 通道转换
+        mask =255.0*np.array(decoded)# cv2.imread(os.path.join(out_path, label_name))#
+        #mask = cv2.cvtColor(mask, cv2.COLOR_BGR2RGB)  # 通道转换
+        #cv2.imshow('1',mask)
+        #cv2.waitKey(0)
         mask = mask.astype(int)
         label_mask = np.zeros((mask.shape[0], mask.shape[1]), dtype=np.int16)
             # 标签处理
         for ii, label1 in enumerate(VOC_COLORMAP):
             locations = np.all(mask == label1, axis=-1)
             label_mask[locations] = ii
-
+        blank = np.zeros_like(norm_cam[0])
             # 在标签图上找到对应的区域，进行标注
-        atl_save_path="label_dict"
-        if not os.path.isdir(atl_save_path):
-            os.mkdir(atl_save_path)
-        
         for i in range(len(slic_selected1)):
-            coordinate = slic_selected1[i]
-            x = coordinate[0]
-            y = coordinate[1]
-            #print(label_mask[x][y])
-            if (label_mask[x][y] != 0):
-                ##该点处的cam数值为[0,0,....0]
-                #norm_cam1[x][y] = np.zeros(20)
-                norm_cam_copy[x][y][label_mask[x][y] - 1] = 1
+            try:
+                coordinates = np.array(slic_selected1[i]).T
+                #print(blank[coordinates])
+                blank[coordinates[0],coordinates[1]] = 1
+            except:
+                pass
 
-            #else:
-                ##该点处的cam数值为[0,0,..1..0]
-                #norm_cam1[x][y] = np.zeros(20)
-                #norm_cam1[x][y][label_mask[x][y] - 1] = 1
 
         for i in range(np.shape(around_slic2)[0]):
             if (abs(score[around_slic2[i]] - score[np.argmax(score)]) <= 0.1):
                 for j in range(len(slic[around_slic2[i]])):
-
-                    x,y= slic[around_slic2[i]][j]
-
-                    #norm_cam1[x][y] = np.zeros(20)
-                    if (label_mask[x][y] != 0):
-                        norm_cam_copy[x][y][label_mask[x][y] - 1] = 1
-            # 可视化
-        copy_dict={}
-        norm_cam_copy = norm_cam_copy.transpose(2, 0, 1)
-        norm_cam1 = norm_cam1.transpose(2, 0, 1)
-        # imageio.imsave(os.path.join(args.out_cam_pred, img_name + 'mark11' + '.png'),
-        #                255 * norm_cam1[np.argmax(cam_ssum)])
-
-        ##输出cam
-        for i in range(20):
-            #print(label[i])
-            if label[i] > 1e-5:
-                cam_dict[i] = norm_cam1[i]
-                copy_dict[i] = norm_cam_copy[i]
-        np.save(os.path.join(atl_save_path, img_name + '.npy'), copy_dict)
-        if args.out_cam is not None:
-            np.save(os.path.join(args.out_cam, img_name + '.npy'), cam_dict)
-
-        def _crf_with_alpha(cam_dict, alpha):
-            v = np.array(list(cam_dict.values()))
-            bg_score = np.power(1 - np.max(v, axis=0, keepdims=True), alpha)
-            bgcam_score = np.concatenate((bg_score, v), axis=0)
-            crf_score = imutils.crf_inference(orig_img, bgcam_score, labels=bgcam_score.shape[0])
-
-            n_crf_al = dict()
-
-            n_crf_al[0] = crf_score[0]
-            for i, key in enumerate(cam_dict.keys()):
-                n_crf_al[key + 1] = crf_score[i + 1]
-
-            return n_crf_al
-
-
-        if args.out_la_crf is not None:
-            crf_la = _crf_with_alpha(cam_dict, args.low_alpha)
-            np.save(os.path.join(args.out_la_crf, img_name + '.npy'), crf_la)
-
-        if args.out_ha_crf is not None:
-            crf_ha = _crf_with_alpha(cam_dict, args.high_alpha)
-            np.save(os.path.join(args.out_ha_crf, img_name + '.npy'), crf_ha)
-        procbar.update(1)
-
-
+                    try:
+                        coordinate = slic[around_slic2[i]][j]
+                        x = coordinate[0]
+                        y = coordinate[1]
+                        blank[x][y]=1
+                    except:
+                        pass
+                    # if (label_mask[x][y] == 0):
+                    #     norm_cam1[x][y] = np.zeros(20)
+                    # else:
+                    #     norm_cam1[x][y] = np.zeros(20)
+                    #     norm_cam1[x][y][label_mask[x][y] - 1] = 1
+        position="position"
+        label_position="label_mask"
+        #a=np.sum(blank)
+        #cv2.imshow('b',blank)
+        #cv2.waitKey(0)
+        np.save(os.path.join(position, img_name + '.npy'), blank)
+        np.save(os.path.join(label_position, img_name + '.npy'), label_mask)
+        #procbar.update(1)
 
 
 
